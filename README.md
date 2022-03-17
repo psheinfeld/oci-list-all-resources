@@ -1,0 +1,1 @@
+# oci-list-all-resources
