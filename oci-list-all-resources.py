@@ -2,8 +2,15 @@ import oci
 import sys
 import csv
 import time
-
+import json
 import logging
+from datetime import datetime as dt
+from collections import Counter
+
+props_mapping = {"instance": ['availability_domain', 'capacity_reservation_id','compartment_id','display_name','id','lifecycle_state','region','shape','shape_config.memory_in_gbs','shape_config.ocpus','shape_config.local-disks-total-size-in-gbs','shape_config.local-disk-description'],
+           "volume": ['availability_domain','compartment_id','display_name','id','lifecycle_state','vpus_per_gb','size_in_gbs','is_hydrated','is_auto_tune_enabled'],
+           "bootvolume":['availability_domain','compartment_id','display_name','id','lifecycle_state','vpus_per_gb','size_in_gbs','is_hydrated','is_auto_tune_enabled']}
+
 
 def get_logger(logger_name, logLevel):
     print("init logger - name : {} , level : {}".format(logger_name,logLevel))
@@ -16,7 +23,7 @@ def get_logger(logger_name, logLevel):
     log.addHandler(ch)
     return log
 
-def get_param_value(obj,param_path,default_value=None):
+def get_param_value(obj,param_path,default_value=""):
     try:
         path_parts = param_path.split(".")
         temp = obj
@@ -28,47 +35,82 @@ def get_param_value(obj,param_path,default_value=None):
             if part == path_parts[-1]:
                 return temp
     except Exception as e:
-        log.error("error geting attribute {} for object {} : {}".format(param_path, type(obj), e))
+        #log.error("error geting attribute {} for object {} : {}".format(param_path, type(obj), e))
         return default_value
 
 
 
-def get_instances_for_compartment(compartment_id):
+def get_instances_for_compartment(region, compartment_id):
     instances_list = []
-    log.info("instances in : {}".format(compartment_id))
-    try:
-        response_compartments = identity_client.list_compartments(compartment_id)
-        for compartment in response_compartments.data:
-            instances_list = instances_list + get_instances_for_compartment(compartment.id)
-    except Exception as e:
-         log.error("error geting compartment for {} : {}".format(compartment_id, e))
-         return []
-
-    # time.sleep(.05)
-    #get instances for compartment
+    log.info("{} getting instances in : {}".format(region, compartment_id))
     response = compute_client.list_instances(compartment_id)
     instances_list = instances_list + response.data
     while response.has_next_page:
-        # time.sleep(.05)
         response = compute_client.list_instances(compartment_id,page=response.next_page)
         instances_list = instances_list + response.data
+    instances_list = list(map(lambda n: ("instance",n), instances_list))
+    log.info("{} {} instances in : {}".format(region, len(instances_list), compartment_id))
     return instances_list
+
+def get_bootvolumes_for_compartment(region, compartment_id):
+    bootvolumes_list_all = []
+    response_availability_domains = identity_client.list_availability_domains(compartment_id)
+
+    for availability_domain in response_availability_domains.data:
+        bootvolumes_list = []
+        log.info("{} {} getting bootvolumes in : {}".format(region,availability_domain.name, compartment_id))
+        response = block_client.list_boot_volumes(availability_domain = availability_domain.name, compartment_id = compartment_id)
+        bootvolumes_list = bootvolumes_list + response.data
+        while response.has_next_page:
+            response = block_client.list_boot_volumes(availability_domain = availability_domain.name, compartment_id = compartment_id, page=response.next_page)
+            bootvolumes_list = bootvolumes_list + response.data
+        log.info("{} {} {} bootvolumes in : {}".format(region,availability_domain.name,len(bootvolumes_list), compartment_id))
+        bootvolumes_list_all = bootvolumes_list_all + bootvolumes_list
+
+    bootvolumes_list_all = list(map(lambda n: ("bootvolume",n), bootvolumes_list_all))
+    return bootvolumes_list_all
+
+def get_blockvolumes_for_compartment(region, compartment_id):
+    blockvolumes_list = []
+    # response_availability_domains = identity_client.list_availability_domains(compartment_id)
+    # for availability_domain in response_availability_domains.data:
+    log.info("{} getting blockvolumes in : {}".format(region, compartment_id))
+    # response = block_client.list_volumes(availability_domain = availability_domain, compartment_id = compartment_id)
+    response = block_client.list_volumes( compartment_id = compartment_id)
+    blockvolumes_list = blockvolumes_list + response.data
+    while response.has_next_page:
+        # response = block_client.list_volumes(availability_domain = availability_domain, compartment_id = compartment_id,page=response.next_page)
+        response = block_client.list_volumes(compartment_id = compartment_id,page=response.next_page)
+        blockvolumes_list = blockvolumes_list + response.data
+
+    log.info("{} {} blockvolumes in : {}".format(region, len(blockvolumes_list), compartment_id))
+    blockvolumes_list = list(map(lambda n: ("volume",n), blockvolumes_list))
+    return blockvolumes_list
 
 def get_resources_for_compartment(region, compartment_id):
     resources_list = []
 
     try:
         response_compartments = identity_client.list_compartments(compartment_id)
+        print(response_compartments.data)
         for compartment in response_compartments.data:
-            resources_list = resources_list + get_resources_for_compartment(region, compartment.id)
+            compartments_set.add(compartment)
+            if recursive_report:
+                resources_list = resources_list + get_resources_for_compartment(region, compartment.id)
     except Exception as e:
          log.error("error geting compartment for {} : {}".format(compartment_id, e))
          return []
     
     #return all resources in compartment_id
     log.info("{} resources in : {}".format(region, compartment_id))
-
-    
+    resources_list = resources_list + get_instances_for_compartment(region, compartment_id)
+    resources_list = resources_list + get_bootvolumes_for_compartment(region, compartment_id)
+    resources_list = resources_list + get_blockvolumes_for_compartment(region, compartment_id)
+    #todo:
+    #add boot backups
+    #add vnics
+    #add object storage
+    #add network
 
     return resources_list
 
@@ -76,20 +118,60 @@ if __name__ == "__main__":
     log = get_logger("GetAllResources",5)  
 
     signer = oci.auth.signers.InstancePrincipalsSecurityTokenSigner()
-    compute_client = oci.core.ComputeClient(config={}, signer=signer)
-    identity_client = oci.identity.IdentityClient(config={}, signer=signer)
     
+    compartments_set = set()
     tenancy_id = signer.tenancy_id
     log.info("tenancy_id : {}".format(tenancy_id))
     compartment_id = sys.argv[1] if len(sys.argv) == 2 else tenancy_id
+    recursive_report = True
     log.info("compartment_id : {}".format(compartment_id))  
     
-    
+    identity_client = oci.identity.IdentityClient(config={}, signer=signer)
     subscriptions = identity_client.list_region_subscriptions(tenancy_id)
     resources_list = []
     for subscription in subscriptions.data:
         compute_client = oci.core.ComputeClient(config={"region":subscription.region_name}, signer=signer)
         identity_client = oci.identity.IdentityClient(config={"region":subscription.region_name}, signer=signer)
+        block_client = oci.core.BlockstorageClient(config={"region":subscription.region_name}, signer=signer)
+        #resource_search_client = oci.resource_search.ResourceSearchClient(config={"region":subscription.region_name}, signer=signer)
         resources_list = resources_list + get_resources_for_compartment(subscription.region_name,compartment_id)
+
+    file_name_prefix = str(dt.now().strftime("%Y%m%d-%H%M"))
+    file_name = file_name_prefix + "_resources.csv"
+
+    #props list:
+    shared_properties_list = []
+    specific_properties_list = []
+    for prop_list in props_mapping.values():
+        for prop in prop_list:
+            if not prop in shared_properties_list and not prop in specific_properties_list:
+                shared = True
+                for prop1_list in props_mapping.values():
+                    if not prop in prop1_list:
+                        specific_properties_list.append(prop)
+                        shared = False
+                        break
+                if shared:
+                    shared_properties_list.append(prop)
+    properties_list = shared_properties_list + specific_properties_list
+
+    #properties_list = list(set([item for sublist in props_mapping.values() for item in sublist]))
+
+    # compartments names
+    compartments_dict = {compartment.id:compartment.name for compartment in compartments_set}
+
+    
+    log.info("props : {}".format(properties_list))
+    with open(file_name, 'w',) as csvfile:
+        writer = csv.writer(csvfile)
+        writer.writerow( ["resource_type","prefix"]+ properties_list)
+        for resource in resources_list:
+            output = []
+            output.append(resource[0])
+            output.append(file_name_prefix)
+            for prop in properties_list:
+                output.append(get_param_value(resource[1],prop))
+            writer.writerow(output)
+
 
     
