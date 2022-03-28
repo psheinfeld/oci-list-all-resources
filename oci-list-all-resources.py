@@ -9,7 +9,7 @@ from collections import Counter
 
 
 recursive_report = True
-collect_for_home_region_only = True
+collect_for_home_region_only = False
 props_mapping = {"instance": ['availability_domain', 'capacity_reservation_id','compartment_id','display_name','id','lifecycle_state','region','shape','shape_config.memory_in_gbs','shape_config.ocpus','shape_config.local-disks-total-size-in-gbs','shape_config.local-disk-description'],
            "volume": ['availability_domain','compartment_id','display_name','id','lifecycle_state','vpus_per_gb','size_in_gbs','is_hydrated','is_auto_tune_enabled'],
            "bootvolume":['availability_domain','compartment_id','display_name','id','lifecycle_state','vpus_per_gb','size_in_gbs','is_hydrated','is_auto_tune_enabled']}
