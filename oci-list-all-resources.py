@@ -7,6 +7,9 @@ import logging
 from datetime import datetime as dt
 from collections import Counter
 
+
+recursive_report = True
+collect_for_home_region_only = True
 props_mapping = {"instance": ['availability_domain', 'capacity_reservation_id','compartment_id','display_name','id','lifecycle_state','region','shape','shape_config.memory_in_gbs','shape_config.ocpus','shape_config.local-disks-total-size-in-gbs','shape_config.local-disk-description'],
            "volume": ['availability_domain','compartment_id','display_name','id','lifecycle_state','vpus_per_gb','size_in_gbs','is_hydrated','is_auto_tune_enabled'],
            "bootvolume":['availability_domain','compartment_id','display_name','id','lifecycle_state','vpus_per_gb','size_in_gbs','is_hydrated','is_auto_tune_enabled']}
@@ -92,9 +95,9 @@ def get_resources_for_compartment(region, compartment_id):
 
     try:
         response_compartments = identity_client.list_compartments(compartment_id)
-        print(response_compartments.data)
+        #print(response_compartments.data)
         for compartment in response_compartments.data:
-            compartments_set.add(compartment)
+            compartments_dict[compartment.id] = compartment
             if recursive_report:
                 resources_list = resources_list + get_resources_for_compartment(region, compartment.id)
     except Exception as e:
@@ -119,22 +122,34 @@ if __name__ == "__main__":
 
     signer = oci.auth.signers.InstancePrincipalsSecurityTokenSigner()
     
-    compartments_set = set()
+    #dict to store all compartments for output
+    compartments_dict = dict()
     tenancy_id = signer.tenancy_id
-    log.info("tenancy_id : {}".format(tenancy_id))
     compartment_id = sys.argv[1] if len(sys.argv) == 2 else tenancy_id
-    recursive_report = True
-    log.info("compartment_id : {}".format(compartment_id))  
+
+    log.info("tenancy_id : {}".format(tenancy_id))
+    log.info("compartment_id : {}".format(compartment_id))
+    log.info("recursive_report : {}".format(recursive_report))
+    log.info("collect_for_home_region_only : {}".format(collect_for_home_region_only))
+
     
     identity_client = oci.identity.IdentityClient(config={}, signer=signer)
     subscriptions = identity_client.list_region_subscriptions(tenancy_id)
+
+    #add requested compartment in to dictionary
+    compartments_dict[compartment_id] = identity_client.get_compartment(compartment_id).data
+
+
     resources_list = []
     for subscription in subscriptions.data:
+        if collect_for_home_region_only and not subscription.is_home_region:
+            continue
         compute_client = oci.core.ComputeClient(config={"region":subscription.region_name}, signer=signer)
         identity_client = oci.identity.IdentityClient(config={"region":subscription.region_name}, signer=signer)
         block_client = oci.core.BlockstorageClient(config={"region":subscription.region_name}, signer=signer)
         #resource_search_client = oci.resource_search.ResourceSearchClient(config={"region":subscription.region_name}, signer=signer)
         resources_list = resources_list + get_resources_for_compartment(subscription.region_name,compartment_id)
+
 
     file_name_prefix = str(dt.now().strftime("%Y%m%d-%H%M"))
     file_name = file_name_prefix + "_resources.csv"
@@ -158,17 +173,21 @@ if __name__ == "__main__":
     #properties_list = list(set([item for sublist in props_mapping.values() for item in sublist]))
 
     # compartments names
-    compartments_dict = {compartment.id:compartment.name for compartment in compartments_set}
+    #compartments_dict = {compartment.id:compartment.name for compartment in compartments_set}
 
     
     log.info("props : {}".format(properties_list))
     with open(file_name, 'w',) as csvfile:
         writer = csv.writer(csvfile)
-        writer.writerow( ["resource_type","prefix"]+ properties_list)
+        writer.writerow( ["resource_type","prefix","compartment_name"]+ properties_list)
         for resource in resources_list:
             output = []
             output.append(resource[0])
             output.append(file_name_prefix)
+            #extract compartment name
+            v1 = get_param_value(resource[1],"compartment_id")
+            v2 = compartments_dict.get(v1,"")
+            output.append(v2.name)
             for prop in properties_list:
                 output.append(get_param_value(resource[1],prop))
             writer.writerow(output)
